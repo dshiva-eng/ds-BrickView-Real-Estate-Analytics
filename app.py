@@ -59,7 +59,18 @@ menu = st.sidebar.radio(
 st.title("BrickView Real Estate")
 
 # Load listings data
-query = "SELECT * FROM listings"
+query = """
+SELECT l.*,
+       p.bedrooms,
+       p.bathrooms,
+       p.furnishing_status,
+       p.metro_distance_km,
+       p.parking_available,
+       p.power_backup
+FROM listings l
+JOIN property_attributes p
+ON l.listing_id = p.listing_id
+"""
 df = pd.read_sql(query, engine)
 if menu == "1. Intro":
     st.header("Welcome to BrickView Real Estate")
@@ -95,7 +106,37 @@ elif menu == "2. Query":
         max_price,
         (min_price, max_price)
     )
-    
+    st.sidebar.markdown("### Optional Comfort Filters")
+
+    bedroom_options = sorted(df["bedrooms"].dropna().unique().tolist())
+    selected_bedrooms = st.sidebar.selectbox(
+        "Select Bedrooms",
+        ["All"] + bedroom_options
+    )
+
+    furnishing_options = sorted(df["furnishing_status"].dropna().unique().tolist())
+    selected_furnishing = st.sidebar.selectbox(
+        "Furnishing Status",
+        ["All"] + furnishing_options
+    )
+
+    max_metro_distance = float(df["metro_distance_km"].max())
+    selected_metro_distance = st.sidebar.slider(
+        "Maximum Distance from Metro (km)",
+        0.0,
+        max_metro_distance,
+        max_metro_distance
+    )
+
+    selected_parking = st.sidebar.selectbox(
+        "Parking Available",
+        ["All", "Yes", "No"]
+    )
+
+    selected_power_backup = st.sidebar.selectbox(
+        "Power Backup",
+        ["All", "Yes", "No"]
+    )
     # Apply filters
     filtered_df = df.copy()
     
@@ -104,7 +145,27 @@ elif menu == "2. Query":
     
     if selected_property != "All":
         filtered_df = filtered_df[filtered_df["property_type"] == selected_property]
-    
+        
+    if selected_bedrooms != "All":
+        filtered_df = filtered_df[filtered_df["bedrooms"] == selected_bedrooms]
+
+    if selected_furnishing != "All":
+        filtered_df = filtered_df[filtered_df["furnishing_status"] == selected_furnishing]
+
+    filtered_df = filtered_df[
+        filtered_df["metro_distance_km"] <= selected_metro_distance
+    ]
+
+    if selected_parking == "Yes":
+        filtered_df = filtered_df[filtered_df["parking_available"] == True]
+    elif selected_parking == "No":
+        filtered_df = filtered_df[filtered_df["parking_available"] == False]
+
+    if selected_power_backup == "Yes":
+        filtered_df = filtered_df[filtered_df["power_backup"] == True]
+    elif selected_power_backup == "No":
+        filtered_df = filtered_df[filtered_df["power_backup"] == False]
+        
     filtered_df = filtered_df[
         (filtered_df["price"] >= selected_price[0]) &
         (filtered_df["price"] <= selected_price[1])
@@ -516,121 +577,149 @@ elif menu == "5. SQL Query":
     
     st.write("### Query Output")
     st.dataframe(query_result)
+
 elif menu == "4. CRUD Operation":
     st.header("CRUD Operation")
-    st.subheader("Agents CRUD Operations")
+    st.subheader("Database Table Operations")
+
+    table_config = {
+        "agents": "agent_id",
+        "listings": "listing_id",
+        "property_attributes": "attribute_id",
+        "buyers": "buyer_id",
+        "sales": "listing_id"
+    }
+
+    selected_table = st.selectbox(
+        "Select Table",
+        list(table_config.keys()),
+        key="crud_table_select"
+    )
+
+    primary_key = table_config[selected_table]
+
+    table_df = pd.read_sql(f"SELECT * FROM {selected_table}", engine)
+    st.write(f"### {selected_table.title()} Table")
+    st.dataframe(table_df)
+
     crud_action = st.selectbox(
         "Choose Action",
         ["View", "Add", "Update", "Delete"],
-        key="agents_crud_action"
+        key="crud_action"
     )
-    
+
+    columns = table_df.columns.tolist()
+
     if crud_action == "View":
-        agents_df = pd.read_sql("SELECT * FROM agents", engine)
-        st.dataframe(agents_df)
-    
+        st.dataframe(table_df)
+
     elif crud_action == "Add":
-        with st.form("add_agent_form"):
-            agent_id = st.text_input("Agent ID")
-            name = st.text_input("Name")
-            phone = st.text_input("Phone")
-            email = st.text_input("Email")
-            commission_rate = st.number_input("Commission Rate", min_value=0.0, step=0.1)
-            deals_closed = st.number_input("Deals Closed", min_value=0, step=1)
-            rating = st.number_input("Rating", min_value=0.0, max_value=5.0, step=0.1)
-            experience_years = st.number_input("Experience Years", min_value=0, step=1)
-            avg_closing_days = st.number_input("Average Closing Days", min_value=0, step=1)
-    
-            submit_add = st.form_submit_button("Add Agent")
-    
+        st.subheader(f"Add New Record to {selected_table}")
+
+        with st.form("add_record_form"):
+            new_values = {}
+            for col in columns:
+                if pd.api.types.is_integer_dtype(table_df[col]):
+                    new_values[col] = st.number_input(col, value=0, step=1)
+                elif pd.api.types.is_float_dtype(table_df[col]):
+                    new_values[col] = st.number_input(col, value=0.0)
+                elif pd.api.types.is_bool_dtype(table_df[col]):
+                    new_values[col] = st.checkbox(col)
+                else:
+                    new_values[col] = st.text_input(col)
+
+            submit_add = st.form_submit_button("Add Record")
+
             if submit_add:
-                insert_query = text("""
-                    INSERT INTO agents (
-                        agent_id, name, phone, email,
-                        commission_rate, deals_closed, rating,
-                        experience_years, avg_closing_days
-                    )
-                    VALUES (
-                        :agent_id, :name, :phone, :email,
-                        :commission_rate, :deals_closed, :rating,
-                        :experience_years, :avg_closing_days
-                    )
-                """)
-    
+                column_names = ", ".join(columns)
+                placeholders = ", ".join([f":{col}" for col in columns])
+
+                insert_query = text(
+                    f"INSERT INTO {selected_table} ({column_names}) VALUES ({placeholders})"
+                )
+
                 with engine.begin() as connection:
-                    connection.execute(insert_query, {
-                        "agent_id": agent_id,
-                        "name": name,
-                        "phone": phone,
-                        "email": email,
-                        "commission_rate": commission_rate,
-                        "deals_closed": deals_closed,
-                        "rating": rating,
-                        "experience_years": experience_years,
-                        "avg_closing_days": avg_closing_days
-                    })
-    
-                st.success("Agent added successfully!")
-    
+                    connection.execute(insert_query, new_values)
+                    
+                st.success("Record added successfully!")
+                
     elif crud_action == "Update":
-        agent_ids = pd.read_sql("SELECT agent_id FROM agents ORDER BY agent_id", engine)["agent_id"].tolist()
-        selected_agent_id = st.selectbox("Select Agent ID to Update", agent_ids, key="update_agent_id")
-    
-        agent_data = pd.read_sql(
-            f"SELECT * FROM agents WHERE agent_id = '{selected_agent_id}'",
+        st.subheader(f"Update Record in {selected_table}")
+
+        ids = table_df[primary_key].tolist()
+        selected_id = st.selectbox(
+            f"Select {primary_key} to Update",
+            ids,
+            key="update_record_id"
+        )
+
+        record_data = pd.read_sql(
+            f"SELECT * FROM {selected_table} WHERE {primary_key} = '{selected_id}'",
             engine
         ).iloc[0]
-    
-        with st.form("update_agent_form"):
-            name = st.text_input("Name", value=agent_data["name"])
-            phone = st.text_input("Phone", value=agent_data["phone"])
-            email = st.text_input("Email", value=agent_data["email"])
-            commission_rate = st.number_input("Commission Rate", min_value=0.0, step=0.1, value=float(agent_data["commission_rate"]))
-            deals_closed = st.number_input("Deals Closed", min_value=0, step=1, value=int(agent_data["deals_closed"]))
-            rating = st.number_input("Rating", min_value=0.0, max_value=5.0, step=0.1, value=float(agent_data["rating"]))
-            experience_years = st.number_input("Experience Years", min_value=0, step=1, value=int(agent_data["experience_years"]))
-            avg_closing_days = st.number_input("Average Closing Days", min_value=0, step=1, value=int(agent_data["avg_closing_days"]))
-    
-            submit_update = st.form_submit_button("Update Agent")
-    
+
+        with st.form("update_record_form"):
+            updated_values = {}
+
+            for col in columns:
+                if col == primary_key:
+                    st.text_input(col, value=str(record_data[col]), disabled=True)
+                    updated_values[col] = record_data[col]
+                elif pd.api.types.is_numeric_dtype(table_df[col]):
+                    updated_values[col] = st.number_input(
+                        col,
+                        value=float(record_data[col]) if pd.notna(record_data[col]) else 0.0
+                    )
+                elif pd.api.types.is_bool_dtype(table_df[col]):
+                    updated_values[col] = st.checkbox(
+                        col,
+                        value=bool(record_data[col])
+                    )
+                else:
+                    updated_values[col] = st.text_input(
+                        col,
+                        value=str(record_data[col]) if pd.notna(record_data[col]) else ""
+                    )
+
+            submit_update = st.form_submit_button("Update Record")
+
             if submit_update:
-                update_query = text("""
-                    UPDATE agents
-                    SET name = :name,
-                        phone = :phone,
-                        email = :email,
-                        commission_rate = :commission_rate,
-                        deals_closed = :deals_closed,
-                        rating = :rating,
-                        experience_years = :experience_years,
-                        avg_closing_days = :avg_closing_days
-                    WHERE agent_id = :agent_id
-                """)
-    
+                set_clause = ", ".join(
+                    [f"{col} = :{col}" for col in columns if col != primary_key]
+                )
+                update_query = text(
+                    f"UPDATE {selected_table} SET {set_clause} WHERE {primary_key} = :{primary_key}"
+                )
+
+                for col in columns:
+                    if pd.api.types.is_integer_dtype(table_df[col]):
+                        updated_values[col] = int(updated_values[col])
+                    elif pd.api.types.is_float_dtype(table_df[col]):
+                        updated_values[col] = float(updated_values[col])
+                    elif pd.api.types.is_bool_dtype(table_df[col]):
+                        updated_values[col] = bool(updated_values[col])
+
                 with engine.begin() as connection:
-                    connection.execute(update_query, {
-                        "agent_id": selected_agent_id,
-                        "name": name,
-                        "phone": phone,
-                        "email": email,
-                        "commission_rate": commission_rate,
-                        "deals_closed": deals_closed,
-                        "rating": rating,
-                        "experience_years": experience_years,
-                        "avg_closing_days": avg_closing_days
-                    })
-    
-                st.success("Agent updated successfully!")
+                    connection.execute(update_query, updated_values)     
+
+                st.success("Record updated successfully!")
+
     elif crud_action == "Delete":
-        agent_ids = pd.read_sql("SELECT agent_id FROM agents ORDER BY agent_id", engine)["agent_id"].tolist()
-        selected_agent_id = st.selectbox("Select Agent ID to Delete", agent_ids, key="delete_agent_id")
-    
-        if st.button("Delete Agent"):
-            delete_query = text("DELETE FROM agents WHERE agent_id = :agent_id")
-    
+        st.subheader(f"Delete Record from {selected_table}")
+
+        ids = table_df[primary_key].tolist()
+        selected_id = st.selectbox(
+            f"Select {primary_key} to Delete",
+            ids,
+            key="delete_record_id"
+        )
+
+        if st.button("Delete Record"):
+            delete_query = text(
+                f"DELETE FROM {selected_table} WHERE {primary_key} = :selected_id"
+            )
+
             with engine.begin() as connection:
-                connection.execute(delete_query, {"agent_id": selected_agent_id})
-    
-            st.success("Agent deleted successfully!")
+                connection.execute(delete_query, {"selected_id": selected_id})
 
-
+            st.success("Record deleted successfully!")
